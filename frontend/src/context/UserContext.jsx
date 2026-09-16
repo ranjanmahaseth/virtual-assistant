@@ -1,7 +1,9 @@
 import axios from "axios";
-import React, { createContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 
 export const userDataContext = createContext();
+
+export const useUserData = () => useContext(userDataContext);
 
 function UserContext({ children }) {
   const serverUrl = "http://localhost:5000";
@@ -10,6 +12,7 @@ function UserContext({ children }) {
   const [frontendImage, setFrontendImage] = useState(null);
   const [backendImage, setBackendImage] = useState(null);
   const [selectedImage, setSelectedImage] = useState(null);
+  const [selectedGender, setSelectedGender] = useState('female');
 
   const handleCurrentUser = async () => {
     try {
@@ -19,7 +22,6 @@ function UserContext({ children }) {
       setUserData(result.data);
     } catch (error) {
       setUserData(null);
-      console.log("handleCurrentUser error:", error);
     } finally {
       setLoadingUser(false);
     }
@@ -27,8 +29,8 @@ function UserContext({ children }) {
 
   const getGeminiResponse = async (command) => {
     try {
-      if (!command || typeof command !== 'string') {
-        return { response: "Invalid command" };
+      if (!command || typeof command !== "string") {
+        return { type: "general", userInput: command, response: "Invalid command" };
       }
       const result = await axios.post(
         `${serverUrl}/api/user/asktoassistant`,
@@ -37,18 +39,13 @@ function UserContext({ children }) {
       );
       return result.data;
     } catch (error) {
-      console.log("getGeminiResponse error:", error);
-      return { response: "Sorry, I couldn't process your request" };
+      return { type: "general", userInput: command, response: "Sorry, I could not process your request. Please try again." };
     }
   };
 
   useEffect(() => {
     handleCurrentUser();
   }, []);
-
-  const refreshUserData = async () => {
-    await handleCurrentUser();
-  };
 
   const value = {
     serverUrl,
@@ -60,9 +57,11 @@ function UserContext({ children }) {
     setFrontendImage,
     selectedImage,
     setSelectedImage,
+    selectedGender,
+    setSelectedGender,
     getGeminiResponse,
     loadingUser,
-    refreshUserData,
+    refreshUserData: handleCurrentUser,
   };
 
   return (

@@ -3,262 +3,306 @@ import User from "../models/user.model.js";
 import moment from "moment";
 import geminiResponse from "../gemini.js";
 
-// Get current user (without password)
 export const getCurrentUser = async (req, res) => {
   try {
-    const userId = req.userId;
-    const user = await User.findById(userId).select("-password");
-    if (!user) {
-      return res.status(400).json({ message: "User not found" });
-    }
+    const user = await User.findById(req.userId).select("-password");
+    if (!user) return res.status(400).json({ message: "User not found" });
     return res.status(200).json(user);
   } catch (error) {
-    console.error("getCurrentUser error:", error);
     return res.status(500).json({ message: "Failed to get current user" });
   }
 };
 
-// Update assistant: name + image (upload file or selected image URL)
 export const updateAssistant = async (req, res) => {
   try {
-    console.log("=== UPDATE ASSISTANT START ===");
-    console.log("Request body:", req.body);
-    console.log("User ID:", req.userId);
-    console.log("File present:", !!req.file);
-    
-    const { assistantName, imageUrl } = req.body;
-    
-    if (!assistantName) {
-      console.log("ERROR: No assistant name provided");
-      return res.status(400).json({ message: "Assistant name is required" });
-    }
+    const { assistantName, imageUrl, assistantGender } = req.body;
+
+    if (!assistantName) return res.status(400).json({ message: "Assistant name is required" });
 
     let assistantImage;
-    
-    // For now, skip Cloudinary and just use the imageUrl
     if (imageUrl) {
       assistantImage = imageUrl;
-      console.log("Using imageUrl:", assistantImage);
     } else if (req.file) {
-      // Temporary: use a placeholder for file uploads
-      assistantImage = "https://via.placeholder.com/300x400/0066cc/ffffff?text=Assistant";
-      console.log("File upload detected, using placeholder image");
-    } else {
-      console.log("ERROR: No image provided");
-      return res.status(400).json({ message: "Assistant image is required" });
+      const uploaded = await uploadOnCloudinary(req.file.path);
+      assistantImage = uploaded?.secure_url;
     }
 
-    console.log("Updating user with:", { assistantName, assistantImage });
-    
+    if (!assistantImage) return res.status(400).json({ message: "Assistant image is required" });
+
     const user = await User.findByIdAndUpdate(
       req.userId,
-      { assistantName, assistantImage },
+      { assistantName, assistantImage, assistantGender: assistantGender || 'female' },
       { new: true }
     ).select("-password");
 
-    if (!user) {
-      console.log("ERROR: User not found with ID:", req.userId);
-      return res.status(404).json({ message: "User not found" });
-    }
+    if (!user) return res.status(404).json({ message: "User not found" });
 
-    console.log("SUCCESS: User updated:", { id: user._id, assistantName: user.assistantName });
-    console.log("=== UPDATE ASSISTANT END ===");
-    
     return res.status(200).json(user);
-    
   } catch (error) {
-    console.error("=== UPDATE ASSISTANT ERROR ===");
-    console.error("Error details:", error);
-    console.error("Error stack:", error.stack);
-    return res.status(500).json({ 
-      message: "Failed to update assistant", 
-      error: error.message
-    });
+    return res.status(500).json({ message: "Failed to update assistant" });
   }
 };
 
-// Ask the assistant a question
+const getOfflineResponse = (command, assistantName, userName) => {
+  const lowerCommand = command.toLowerCase();
+
+  const extractSearchTerm = (removeWords) => {
+    return command
+      .replace(new RegExp(assistantName, 'gi'), '')
+      .replace(new RegExp(removeWords.join('|'), 'gi'), '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  // YouTube
+  if (lowerCommand.includes('youtube') || lowerCommand.includes('you tube') ||
+      (lowerCommand.includes('play') && (lowerCommand.includes('song') || lowerCommand.includes('video') || lowerCommand.includes('music')))) {
+    const searchTerm = extractSearchTerm(['hello', 'hi', 'hey', 'please', 'open', 'and', 'on', 'youtube', 'you tube', 'search', 'play']);
+    return { type: "youtube-search", userInput: searchTerm || "music", response: "Searching on YouTube for you" };
+  }
+
+  // Google
+  if (lowerCommand.includes('google') ||
+      (lowerCommand.includes('search') && !lowerCommand.includes('youtube'))) {
+    const searchTerm = extractSearchTerm(['hello', 'hi', 'hey', 'please', 'and', 'on', 'google', 'search']);
+    return { type: "google-search", userInput: searchTerm || "search", response: "Searching on Google for you" };
+  }
+
+  // Time
+  if (lowerCommand.includes('time')) {
+    return { type: "get-time", userInput: command, response: "Here is the current time" };
+  }
+
+  // Date
+  if (lowerCommand.includes('date')) {
+    return { type: "get-date", userInput: command, response: "Here is today's date" };
+  }
+
+  // Day
+  if (lowerCommand.includes('what day') || lowerCommand.includes('which day')) {
+    return { type: "get-day", userInput: command, response: "Today is" };
+  }
+
+  // Calculator
+  if (lowerCommand.includes('calculator')) {
+    return { type: "calculator-open", userInput: command, response: "Opening calculator" };
+  }
+
+  // Instagram
+  if (lowerCommand.includes('instagram')) {
+    return { type: "instagram-open", userInput: command, response: "Opening Instagram" };
+  }
+
+  // Facebook
+  if (lowerCommand.includes('facebook')) {
+    return { type: "facebook-open", userInput: command, response: "Opening Facebook" };
+  }
+
+  // Weather
+  if (lowerCommand.includes('weather')) {
+    return { type: "weather-show", userInput: command, response: "Showing weather information" };
+  }
+
+  // Greetings
+  if (lowerCommand.includes('hello') || lowerCommand.includes('hi') || lowerCommand.includes('hey')) {
+    return { type: "general", userInput: command, response: `Hello ${userName}! How can I help you today?` };
+  }
+
+  // How are you
+  if (lowerCommand.includes('how are you')) {
+    return { type: "general", userInput: command, response: "I am doing great! How can I help you today?" };
+  }
+
+  // Who created / who are you
+  if (lowerCommand.includes('who created you') || lowerCommand.includes('who made you') || lowerCommand.includes('who are you')) {
+    return { type: "general", userInput: command, response: `I am ${assistantName}, your virtual assistant created by ${userName}.` };
+  }
+
+  // Thank you
+  if (lowerCommand.includes('thank you') || lowerCommand.includes('thanks')) {
+    return { type: "general", userInput: command, response: "You are welcome! Is there anything else I can help you with?" };
+  }
+
+  // Joke
+  if (lowerCommand.includes('joke') || lowerCommand.includes('funny')) {
+    const jokes = [
+      "Why do programmers prefer dark mode? Because light attracts bugs!",
+      "Why did the computer go to the doctor? Because it had a virus!",
+      "What do you call a computer that sings? A Dell!",
+      "Why was the math book sad? Because it had too many problems!"
+    ];
+    return { type: "general", userInput: command, response: jokes[Math.floor(Math.random() * jokes.length)] };
+  }
+
+  // Motivational / inspiration
+  if (lowerCommand.includes('motivat') || lowerCommand.includes('inspir') || lowerCommand.includes('quote')) {
+    const quotes = [
+      "Believe you can and you are halfway there.",
+      "The only way to do great work is to love what you do.",
+      "It does not matter how slowly you go as long as you do not stop.",
+      "Success is not final, failure is not fatal. It is the courage to continue that counts."
+    ];
+    return { type: "general", userInput: command, response: quotes[Math.floor(Math.random() * quotes.length)] };
+  }
+
+  // Science — gravity
+  if (lowerCommand.includes('gravity')) {
+    return { type: "general", userInput: command, response: "Gravity is a natural force that attracts objects with mass toward each other. On Earth, it pulls everything downward toward the center of the planet. It was described by Isaac Newton and later explained more deeply by Albert Einstein." };
+  }
+
+  // Science — sun
+  if (lowerCommand.includes('sun')) {
+    return { type: "general", userInput: command, response: "The Sun is a star at the center of our solar system. It is a giant ball of hot plasma that provides light and heat to Earth. It is about 150 million kilometers away from Earth." };
+  }
+
+  // Science — moon
+  if (lowerCommand.includes('moon')) {
+    return { type: "general", userInput: command, response: "The Moon is Earth's only natural satellite. It orbits Earth and reflects sunlight. It is about 384,000 kilometers away from Earth and affects ocean tides." };
+  }
+
+  // Science — water
+  if (lowerCommand.includes('water')) {
+    return { type: "general", userInput: command, response: "Water is a chemical compound made of two hydrogen atoms and one oxygen atom, written as H2O. It is essential for all life on Earth and covers about 71 percent of the Earth's surface." };
+  }
+
+  // Science — photosynthesis
+  if (lowerCommand.includes('photosynthesis')) {
+    return { type: "general", userInput: command, response: "Photosynthesis is the process by which plants use sunlight, water, and carbon dioxide to produce food and oxygen. It happens in the chloroplasts of plant cells using a green pigment called chlorophyll." };
+  }
+
+  // Geography — India
+  if (lowerCommand.includes('india')) {
+    return { type: "general", userInput: command, response: "India is a country in South Asia and the world's most populous country. Its capital is New Delhi. India is known for its rich culture, history, and diversity. It gained independence from British rule on August 15, 1947." };
+  }
+
+  // Geography — capital of India
+  if (lowerCommand.includes('capital of india')) {
+    return { type: "general", userInput: command, response: "The capital of India is New Delhi." };
+  }
+
+  // History — Einstein
+  if (lowerCommand.includes('einstein')) {
+    return { type: "general", userInput: command, response: "Albert Einstein was a German-born physicist who developed the theory of relativity. He is best known for the equation E equals mc squared. He won the Nobel Prize in Physics in 1921." };
+  }
+
+  // History — Newton
+  if (lowerCommand.includes('newton')) {
+    return { type: "general", userInput: command, response: "Isaac Newton was an English mathematician and physicist. He discovered the laws of motion and universal gravitation. He also developed calculus and studied the nature of light." };
+  }
+
+  // Programming — JavaScript
+  if (lowerCommand.includes('javascript')) {
+    return { type: "general", userInput: command, response: "JavaScript is a programming language used to create interactive websites and web applications. It runs in browsers and also on servers using Node.js." };
+  }
+
+  // Programming — Python
+  if (lowerCommand.includes('python')) {
+    return { type: "general", userInput: command, response: "Python is a high-level programming language known for its simple syntax. It is widely used for web development, data science, and artificial intelligence." };
+  }
+
+  // Programming — HTML
+  if (lowerCommand.includes('html')) {
+    return { type: "general", userInput: command, response: "HTML stands for HyperText Markup Language. It is the standard language used to create and structure web pages." };
+  }
+
+  // Programming — CSS
+  if (lowerCommand.includes('css')) {
+    return { type: "general", userInput: command, response: "CSS stands for Cascading Style Sheets. It is used to style and design web pages, controlling colors, fonts, and layout." };
+  }
+
+  // Programming — React
+  if (lowerCommand.includes('react')) {
+    return { type: "general", userInput: command, response: "React is a JavaScript library for building user interfaces. It was created by Facebook and uses reusable components." };
+  }
+
+  // Programming — Node
+  if (lowerCommand.includes('node')) {
+    return { type: "general", userInput: command, response: "Node.js is a JavaScript runtime that allows you to run JavaScript on the server side, outside of a browser." };
+  }
+
+  // What is / define / explain — fallback to Google
+  if (lowerCommand.includes('what is') || lowerCommand.includes('what are') ||
+      lowerCommand.includes('define') || lowerCommand.includes('meaning of')) {
+    const topic = command.replace(/what is|what are|define|meaning of/gi, '').replace(new RegExp(assistantName, 'gi'), '').trim();
+    return { type: "google-search", userInput: topic, response: `Let me search for ${topic} on Google` };
+  }
+
+  // How — fallback to Google
+  if (lowerCommand.includes('how')) {
+    const topic = command.replace(/how does|how do|how to|how/gi, '').replace(new RegExp(assistantName, 'gi'), '').trim();
+    return { type: "google-search", userInput: topic, response: `Searching Google for ${topic}` };
+  }
+
+  // Who is — fallback to Google
+  if (lowerCommand.includes('who is') || lowerCommand.includes('who was')) {
+    const topic = command.replace(/who is|who was/gi, '').replace(new RegExp(assistantName, 'gi'), '').trim();
+    return { type: "google-search", userInput: topic, response: `Searching Google for ${topic}` };
+  }
+
+  // Why / where / when / which / explain / difference — fallback to Google
+  if (lowerCommand.includes('why') || lowerCommand.includes('where') ||
+      lowerCommand.includes('when') || lowerCommand.includes('which') ||
+      lowerCommand.includes('explain') || lowerCommand.includes('difference between')) {
+    return { type: "google-search", userInput: command, response: `Searching Google for your question` };
+  }
+
+  // Default — search Google
+  return { type: "google-search", userInput: command, response: `Let me search that for you on Google` };
+};
+
 export const askToAssistant = async (req, res) => {
   try {
-    console.log('=== ASK ASSISTANT START ===');
     const { command } = req.body;
-    console.log('Command received:', command);
-
     if (!command || typeof command !== "string") {
-      console.log('Invalid command');
       return res.status(400).json({ response: "Invalid command" });
     }
 
     const user = await User.findById(req.userId);
-    if (!user) {
-      console.log('User not found');
-      return res.status(400).json({ message: "User not found" });
-    }
+    if (!user) return res.status(400).json({ message: "User not found" });
 
-    console.log('User found:', user.name);
-    console.log('Assistant name:', user.assistantName);
-
-    // Save command to history
     user.history.push(command);
     await user.save();
 
     const userName = user.name;
     const assistantName = user.assistantName || "Assistant";
 
-    console.log('Calling Gemini API...');
-    let result;
-    try {
-      result = await geminiResponse(command, assistantName, userName);
-      console.log('Raw Gemini response:', result);
-    } catch (error) {
-      console.log('Gemini API failed, using fallback response');
-      
-      // Simple command detection fallback
-      const lowerCommand = command.toLowerCase();
-      
-      // YouTube commands - more flexible detection
-      if ((lowerCommand.includes('youtube') || lowerCommand.includes('you tube')) && 
-          (lowerCommand.includes('search') || lowerCommand.includes('play') || lowerCommand.includes('open'))) {
-        
-        // Extract search term more accurately
-        let searchTerm = command
-          .replace(new RegExp(assistantName, 'gi'), '')
-          .replace(/hello|hi|hey|please|open|and|on/gi, '')
-          .replace(/youtube|you tube|search|play/gi, '')
-          .trim();
-        
-        // Clean up extra spaces
-        searchTerm = searchTerm.replace(/\s+/g, ' ').trim();
-        
-        console.log('YouTube command detected. Search term:', searchTerm);
-        
-        result = JSON.stringify({
-          type: "youtube-search",
-          userInput: searchTerm || "music",
-          response: "Opening YouTube search for you"
-        });
-      } else if (lowerCommand.includes('google') && lowerCommand.includes('search')) {
-        let searchTerm = command
-          .replace(new RegExp(assistantName, 'gi'), '')
-          .replace(/hello|hi|hey|please|and|on/gi, '')
-          .replace(/google|search/gi, '')
-          .trim();
-        
-        searchTerm = searchTerm.replace(/\s+/g, ' ').trim();
-        
-        result = JSON.stringify({
-          type: "google-search",
-          userInput: searchTerm || "search",
-          response: "Searching on Google for you"
-        });
-      } else if (lowerCommand.includes('time')) {
-        result = JSON.stringify({
-          type: "get-time",
-          userInput: command,
-          response: "Here's the current time"
-        });
-      } else if (lowerCommand.includes('date')) {
-        result = JSON.stringify({
-          type: "get-date",
-          userInput: command,
-          response: "Here's today's date"
-        });
-      } else if (lowerCommand.includes('how are you')) {
-        result = JSON.stringify({
-          type: "general",
-          userInput: command,
-          response: `I'm doing great! How can I help you today?`
-        });
-      } else if (lowerCommand.includes('who created you') || lowerCommand.includes('who made you')) {
-        result = JSON.stringify({
-          type: "general",
-          userInput: command,
-          response: `I was created by ${userName}`
-        });
-      } else {
-        result = JSON.stringify({
-          type: "general",
-          userInput: command,
-          response: "I can help you search YouTube, Google, check time, and answer basic questions. What would you like to do?"
-        });
-      }
-    }
-
-    // Extract JSON from response if it's embedded in text
-    const jsonMatch = result.match(/{[\s\S]*}/);
-    console.log('JSON match found:', !!jsonMatch);
-    
-    if (!jsonMatch) {
-      console.log('No JSON found in response');
-      return res.status(400).json({ response: "Sorry, I can't understand." });
-    }
-
-    // Try parsing JSON safely
     let gemResult;
-    try {
+
+  try {
+      const result = await geminiResponse(command, assistantName, userName);
+      const cleaned = result.replace(/```json|```/gi, '').trim();
+      const jsonMatch = cleaned.match(/{[\s\S]*}/);
+      if (!jsonMatch) throw new Error("No JSON in response");
       gemResult = JSON.parse(jsonMatch[0]);
-      console.log('Parsed result:', gemResult);
-    } catch (parseError) {
-      console.error("JSON parse error:", parseError);
-      return res.status(400).json({ response: "Sorry, I can't understand." });
+      if (!gemResult.type || !gemResult.response) throw new Error("Invalid JSON structure");
+    } catch (error) {
+      gemResult = getOfflineResponse(command, assistantName, userName);
     }
 
     const type = gemResult?.type;
-    if (!type) {
-      return res.status(400).json({ response: "Invalid command type" });
-    }
+    if (!type) return res.status(400).json({ response: "Invalid command type" });
 
-    // Handle different types of commands
     switch (type) {
       case "get-date":
-        return res.json({
-          type,
-          userInput: gemResult.userInput || "",
-          response: `Current date is ${moment().format("YYYY-MM-DD")}`,
-        });
+        return res.json({ type, userInput: gemResult.userInput || "", response: `Today's date is ${moment().format("MMMM Do YYYY")}` });
 
       case "get-time":
-        return res.json({
-          type,
-          userInput: gemResult.userInput || "",
-          response: `Current time is ${moment().format("hh:mm A")}`,
-        });
+        return res.json({ type, userInput: gemResult.userInput || "", response: `Current time is ${moment().format("hh:mm A")}` });
 
       case "get-day":
-        return res.json({
-          type,
-          userInput: gemResult.userInput || "",
-          response: `Today is ${moment().format("dddd")}`,
-        });
+        return res.json({ type, userInput: gemResult.userInput || "", response: `Today is ${moment().format("dddd")}` });
 
       case "get-month":
-        return res.json({
-          type,
-          userInput: gemResult.userInput || "",
-          response: `This month is ${moment().format("MMMM")}`,
-        });
-
-      case "google-search":
-      case "youtube-search":
-      case "youtube-play":
-      case "general":
-      case "calculator-open":
-      case "instagram-open":
-      case "facebook-open":
-      case "weather-show":
-        return res.json({
-          type,
-          userInput: gemResult.userInput || "",
-          response: gemResult.response || "No response provided",
-        });
+        return res.json({ type, userInput: gemResult.userInput || "", response: `This month is ${moment().format("MMMM")}` });
 
       default:
-        return res
-          .status(400)
-          .json({ response: "I didn't understand that command." });
+        return res.json({
+          type,
+          userInput: gemResult.userInput || "",
+          response: gemResult.response || "Done",
+        });
     }
   } catch (error) {
-    console.error("askToAssistant error:", error);
     return res.status(500).json({ response: "Ask assistant failed" });
   }
 };

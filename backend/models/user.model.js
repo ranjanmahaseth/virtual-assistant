@@ -24,8 +24,13 @@ const userSchema=new mongoose.Schema({
         type:String,
         trim:true
     },
-     assistantImage:{
+    assistantImage:{
         type:String
+    },
+    assistantGender:{
+        type:String,
+        enum:['male','female'],
+        default:'female'
     },
     history:{
         type:[String],
