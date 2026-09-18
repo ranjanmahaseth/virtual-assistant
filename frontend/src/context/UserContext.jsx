@@ -6,7 +6,7 @@ export const userDataContext = createContext();
 export const useUserData = () => useContext(userDataContext);
 
 function UserContext({ children }) {
-  const serverUrl = "http://localhost:5000";
+  const serverUrl = import.meta.env.VITE_SERVER_URL || "";
   const [userData, setUserData] = useState(null);
   const [loadingUser, setLoadingUser] = useState(true);
   const [frontendImage, setFrontendImage] = useState(null);
