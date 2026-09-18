@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "nodemon index.js",
     "start": "node index.js",
-    "build": "cd ../frontend && npm install && npm run build"
+    "build": "cd ../frontend && npm install && npm run build && cd ../backend"
   },
   "author": "ranjan kumar",
   "license": "ISC",
